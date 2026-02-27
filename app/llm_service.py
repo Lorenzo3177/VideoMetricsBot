@@ -77,9 +77,12 @@ video_snapshots (обычно обозначай как vs):
 - Не используй video_snapshots и JOIN, если вопрос про итоговые значения (SUM из videos) и фильтрация идёт по месяцу/дате публикации.
 - video_snapshots применяй только для приростов/динамики (delta_*) или для окон времени ("в первые N часов").
 
-Фильтрация по месяцу публикации:
-- Если спрашивают "в <месяце> <год>" / "за <месяц> <год>" про опубликованные видео,
-  фильтруй по v.video_created_at диапазоном [YYYY-MM-01; первый день следующего месяца).
+Фильтрация по месяцу:
+- Если вопрос про ОПУБЛИКОВАННЫЕ видео за месяц (сколько видео / суммарные просмотры/лайки и т.п.) —
+  фильтруй по v.video_created_at диапазоном [YYYY-MM-01; следующий месяц).
+- Если вопрос про ПРИРОСТ за месяц (прирост/прибавилось/динамика) —
+  фильтруй по vs.created_at диапазоном [YYYY-MM-01; следующий месяц).
+  Это важно: "прирост за ноябрь 2025" — это снапшоты в ноябре, а не публикации в ноябре.
 
 Важно:
 - всегда используй COALESCE(SUM(...), 0), чтобы результат был числом даже если строк нет
@@ -112,6 +115,11 @@ WHERE vs.created_at >= v.video_created_at
 SELECT COALESCE(SUM(v.views_count), 0)
 FROM videos v
 WHERE v.video_created_at >= '2025-06-01'::date AND v.video_created_at < '2025-07-01'::date;
+
+6) Суммарный прирост лайков за ноябрь 2025:
+SELECT COALESCE(SUM(vs.delta_likes_count), 0)
+FROM video_snapshots vs
+WHERE vs.created_at >= '2025-11-01'::date AND vs.created_at < '2025-12-01'::date;
 
 Если месяц указан словами (например: "май 2025", "июль 2025") — преобразуй в диапазон
 [первый день месяца; первый день следующего месяца).
@@ -164,10 +172,7 @@ class GigaChatClient:
             "max_tokens": 260,
         }
 
-        headers = {
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
         async with aiohttp.ClientSession() as s:
             async with s.post(CHAT_URL, headers=headers, json=payload, ssl=False) as r:
