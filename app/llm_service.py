@@ -23,7 +23,7 @@ def build_system_prompt() -> str:
 
 Схема БД:
 
-videos:
+videos (обычно обозначай как v):
 - id
 - creator_id
 - video_created_at
@@ -34,7 +34,7 @@ videos:
 - created_at
 - updated_at
 
-video_snapshots:
+video_snapshots (обычно обозначай как vs):
 - id
 - video_id (ссылка на videos.id)
 - views_count, likes_count, comments_count, reports_count
@@ -45,21 +45,33 @@ video_snapshots:
 Как выбирать таблицу и поля:
 
 Итоговые значения (всего/общее количество X у всех видео) -> videos:
-- просмотры    -> SUM(views_count)
-- лайки        -> SUM(likes_count)
-- комментарии  -> SUM(comments_count)
-- жалобы       -> SUM(reports_count)
+- просмотры    -> SUM(v.views_count)
+- лайки        -> SUM(v.likes_count)
+- комментарии  -> SUM(v.comments_count)
+- жалобы       -> SUM(v.reports_count)
 
 Прирост/прибавилось/добавилось/динамика X -> video_snapshots:
-- просмотры    -> SUM(delta_views_count)
-- лайки        -> SUM(delta_likes_count)
-- комментарии  -> SUM(delta_comments_count)
-- жалобы       -> SUM(delta_reports_count)
+- просмотры    -> SUM(vs.delta_views_count)
+- лайки        -> SUM(vs.delta_likes_count)
+- комментарии  -> SUM(vs.delta_comments_count)
+- жалобы       -> SUM(vs.delta_reports_count)
 
 Фильтрация по датам:
-- для снапшотов по дате: DATE(created_at) = 'YYYY-MM-DD'
-- для даты публикации видео: DATE(video_created_at) ...
+- для снапшотов по календарной дате: DATE(vs.created_at) = 'YYYY-MM-DD'
+- для даты публикации видео: DATE(v.video_created_at) ...
 - video_created_at существует только в videos
+
+Связь снапшотов с видео (JOIN):
+- если в вопросе упоминается публикация, время "после публикации", "первые N часов" и т.п.,
+  используй JOIN:
+  FROM video_snapshots vs
+  JOIN videos v ON v.id = vs.video_id
+
+Окна времени относительно публикации:
+- формулировка "за первые N часов после публикации" означает интервал:
+  vs.created_at >= v.video_created_at
+  AND vs.created_at <  v.video_created_at + INTERVAL 'N hours'
+- в таких вопросах суммируй именно delta_* (приросты), а не итоговые значения
 
 Важно:
 - всегда используй COALESCE(SUM(...), 0), чтобы результат был числом даже если строк нет
@@ -69,17 +81,24 @@ video_snapshots:
 Примеры:
 
 1) Общее количество лайков у всех видео:
-SELECT COALESCE(SUM(likes_count), 0) FROM videos;
+SELECT COALESCE(SUM(v.likes_count), 0) FROM videos v;
 
 2) Прирост просмотров за дату 2025-11-28:
-SELECT COALESCE(SUM(delta_views_count), 0)
-FROM video_snapshots
-WHERE DATE(created_at) = '2025-11-28';
+SELECT COALESCE(SUM(vs.delta_views_count), 0)
+FROM video_snapshots vs
+WHERE DATE(vs.created_at) = '2025-11-28';
 
 3) Сколько видео опубликовано за май 2025:
 SELECT COUNT(*)
-FROM videos
-WHERE video_created_at >= '2025-05-01'::date AND video_created_at < '2025-06-01'::date;
+FROM videos v
+WHERE v.video_created_at >= '2025-05-01'::date AND v.video_created_at < '2025-06-01'::date;
+
+4) Суммарный прирост комментариев за первые 3 часа после публикации каждого видео:
+SELECT COALESCE(SUM(vs.delta_comments_count), 0)
+FROM video_snapshots vs
+JOIN videos v ON v.id = vs.video_id
+WHERE vs.created_at >= v.video_created_at
+  AND vs.created_at <  v.video_created_at + INTERVAL '3 hours';
 
 Если месяц указан словами (например: "май 2025", "июль 2025") — преобразуй в диапазон
 [первый день месяца; первый день следующего месяца).
@@ -105,7 +124,12 @@ class GigaChatClient:
         }
 
         async with aiohttp.ClientSession() as s:
-            async with s.post(OAUTH_URL, headers=headers, data={"scope": SCOPE}, ssl=False) as r:
+            async with s.post(
+                OAUTH_URL,
+                headers=headers,
+                data={"scope": SCOPE},
+                ssl=False,
+            ) as r:
                 j = await r.json()
 
         self._token = j.get("access_token")
@@ -132,7 +156,10 @@ class GigaChatClient:
             "max_tokens": 240,
         }
 
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
 
         async with aiohttp.ClientSession() as s:
             async with s.post(CHAT_URL, headers=headers, json=payload, ssl=False) as r:
